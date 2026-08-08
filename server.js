@@ -116,6 +116,35 @@ app.post('/api/authenticate', async (req, res) => {
   }
 });
 
+function stampBuildNative(inputFile, outputFile, buildId) {
+  if (!fs.existsSync(inputFile)) {
+    return false;
+  }
+  try {
+    const data = fs.readFileSync(inputFile);
+    const markerBuf = Buffer.from('MARKER_BUILD_ID_START:', 'utf-8');
+    const bufferSize = 80;
+    const replacementStr = 'MARKER_BUILD_ID_START:' + buildId;
+    const replacementBuf = Buffer.alloc(bufferSize, 0);
+    replacementBuf.write(replacementStr, 0, 'utf-8');
+
+    let idx = data.indexOf(markerBuf);
+    while (idx !== -1) {
+      replacementBuf.copy(data, idx, 0, bufferSize);
+      idx = data.indexOf(markerBuf, idx + bufferSize);
+    }
+
+    const padLen = Math.floor(16 + Math.random() * 49);
+    const randomPadding = crypto.randomBytes(padLen);
+    const finalBuffer = Buffer.concat([data, randomPadding]);
+
+    fs.writeFileSync(outputFile, finalBuffer);
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
 app.post('/api/build-download', async (req, res) => {
   const { licenseKey } = req.body;
   const key = (licenseKey || 'UNKNOWN_KEY').trim();
@@ -125,30 +154,25 @@ app.post('/api/build-download', async (req, res) => {
   const outputFile = `Pulse-Internal-${buildId}.exe`;
   const outputFilePath = path.join(__dirname, outputFile);
 
-  const cmd = `python3 stamp_build.py injector.exe ${outputFile} ${buildId} || python stamp_build.py injector.exe ${outputFile} ${buildId} || powershell -ExecutionPolicy Bypass -File stamp_build.ps1 injector.exe ${outputFile} ${buildId}`;
+  const inputPath = path.join(__dirname, 'injector.exe');
+  const success = stampBuildNative(inputPath, outputFilePath, buildId);
+  const targetPath = (success && fs.existsSync(outputFilePath)) ? outputFilePath : inputPath;
 
-  exec(cmd, { cwd: __dirname }, (error, stdout, stderr) => {
-    let targetPath = outputFilePath;
-    if (error || !fs.existsSync(outputFilePath)) {
-      targetPath = path.join(__dirname, 'injector.exe');
+  const logEntry = {
+    licenseKey: key,
+    buildId: buildId,
+    timestamp: new Date().toLocaleDateString('en-US') + ' ' + new Date().toLocaleTimeString('en-US'),
+    fileSize: fs.existsSync(targetPath) ? fs.statSync(targetPath).size : 0
+  };
+  buildLogs.unshift(logEntry);
+  try {
+    fs.writeFileSync(LOGS_FILE, JSON.stringify(buildLogs, null, 2));
+  } catch (e) {}
+
+  res.download(targetPath, `Pulse_Fortnite_Internal_${buildId}.exe`, (err) => {
+    if (targetPath !== inputPath && fs.existsSync(outputFilePath)) {
+      setTimeout(() => fs.unlink(outputFilePath, () => {}), 5000);
     }
-
-    const logEntry = {
-      licenseKey: key,
-      buildId: buildId,
-      timestamp: new Date().toLocaleDateString('en-US') + ' ' + new Date().toLocaleTimeString('en-US'),
-      fileSize: fs.existsSync(targetPath) ? fs.statSync(targetPath).size : 0
-    };
-    buildLogs.unshift(logEntry);
-    try {
-      fs.writeFileSync(LOGS_FILE, JSON.stringify(buildLogs, null, 2));
-    } catch (e) {}
-
-    res.download(targetPath, `Pulse_Fortnite_Internal_${buildId}.exe`, (err) => {
-      if (fs.existsSync(outputFilePath)) {
-        setTimeout(() => fs.unlink(outputFilePath, () => {}), 5000);
-      }
-    });
   });
 });
 
